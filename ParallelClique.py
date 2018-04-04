@@ -50,21 +50,28 @@ def degree(V):
 
 def greedy_clique(V):
     v = np.array(V).astype(np.int32)
+    v = v.ravel()
     dv = degree(V)
     random = generate_coin_flips(np.shape(V)[0])
-
+    
+    shape = []
+    shape.append( np.shape(V)[0])
+    shape.append( np.shape(V)[1])
+    shape = np.array(shape).astype(np.int32)
+    
     ctx = cl.create_some_context()
     queue = cl.CommandQueue(ctx)
 
     v_dev = cl_array.to_device(queue, v)
     dv_dev = cl_array.to_device(queue, dv)
     rand_dev = cl_array.to_device(queue, random)
+    shape_dev = cl_array.to_device(queue, shape)
 
     result = cl_array.empty_like(dv_dev)
 
     prg = cl.Program(ctx, """
-        
-        void mark_vertices(int** V, bool* mark, int* rand, int* dv)
+        #pragma OPENCL EXTENSION cl_khr_fp64 : enable
+        void mark_vertices(__global bool* mark, __global const float* rand, __global const int* dv)
         {
             int gid = get_global_id(0);            
             
@@ -73,17 +80,18 @@ def greedy_clique(V):
 
         }
 
-        void unmark_lower_degree(int** V, bool* mark, int* dv)
+        void unmark_lower_degree(__global const int* V, __global const int* shape, __global bool* mark, __global const int* dv)
         {
             
             int gid = get_global_id(0);
+            int size = get_global_size(0);
             if(mark[gid])
             {
                 int degU = dv[gid];
-                unsigned int neighbours = sizeof(V[0])/sizeof(V[0][0]);
-                for(unsigned int j =0; j< neighbours; j++)
+                
+                for(int j =0; j< shape[1] && gid*shape[1] + j <= size; j++)
                 {
-                    if(V[gid][j] && mark[j])
+                    if(V[gid*shape[1] + j] && mark[j])
                     {
                         int degV = dv[j];
                         if(degV>=degU)
@@ -94,39 +102,37 @@ def greedy_clique(V):
                             break;
                         }
                     }
-                    
                 }
             }
         }
 
-        void select_vertices(int* res, bool* mark)
+        void select_vertices(__global int* res, __global bool* mark)
         {
             int gid = get_global_id(0);
-            unsigned int size = sizeof(mark)/sizeof(mark[0]);
-            for(unsigned int i=0 ; i<size; i++)
+            int size = get_global_size(0);
+            for(int i=0 ; i<size; i++)
                 res[gid] = mark[gid]? 1:0;
         }
 
 
-        __kernel void maximal_clique(__global const int** V,
-        __global const int* rand, __global const int* dv, __global int* res, __global bool* mark)
+        __kernel void maximal_clique(__global const int* V, __global const int* shape,
+        __global const float* rand, __global const int* dv, __global int* res, __global bool* mark)
         {
             int gid = get_global_id(0);
 
-            mark_vertices(V, mark, rand, dv);
+            mark_vertices(mark, rand, dv);
             barrier(CLK_GLOBAL_MEM_FENCE);
-
-            //int group_size = get_global_size(0);
             
-            unmark_lower_degree(V, mark, dv);
+            unmark_lower_degree(V, shape, mark, dv);
             barrier(CLK_GLOBAL_MEM_FENCE);
 
             select_vertices(res, mark);
         }
         """).build()
 
-    prg.maximal_clique(queue, V.shape, dv.shape, v_dev.data, dv_dev.data, rand_dev.data, result.data)#, cl.CreateBuffer(ctx, CL_MEM_READ_WRITE, size, NULL, &err))
-
+    mark = cl.Buffer(ctx, cl.mem_flags.READ_WRITE, result.nbytes/8)
+    prg.maximal_clique(queue, dv_dev.shape, None, v_dev.data, shape_dev.data, rand_dev.data, dv_dev.data, result.data, mark)
+    
     for i in result:
         if i != 0:
             print(i)
