@@ -10,6 +10,8 @@ import pyopencl.array as cl_array
 import numpy as np
 import os, random
 import argparse
+from collections import defaultdict
+
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 os.environ['PYOPENCL_CTX'] = ':'
@@ -35,9 +37,9 @@ def parse_adjacency_matrix( filename):
     return V
 
 def generate_coin_flips(size):
-    rand = np.zeros(size).astype(np.float16)
+    rand = np.zeros(size).astype(np.int32)
     for i in range (size):
-        rand[i] = random.random()
+        rand[i] = random.randint(0, 1)
 
     return rand
 
@@ -59,14 +61,14 @@ def greedy_clique(V):
     shape.append( np.shape(V)[1])
     shape = np.array(shape).astype(np.int32)
     mark = np.zeros(shape[0]).astype(np.bool)
-    v_visited = np.ones(shape[0]*shape[1]).astype(np.bool)
+    v_visited = np.ones(shape[0]).astype(np.bool)
     v_count=np.zeros(1).astype(np.int32)
 
-    v_count[0] = shape[0] * shape[1]
+    v_count[0] = shape[0] - 1
     
     ctx = cl.create_some_context()
     queue = cl.CommandQueue(ctx)
-
+    
     v_dev = cl_array.to_device(queue, v)
     dv_dev = cl_array.to_device(queue, dv)
     rand_dev = cl_array.to_device(queue, random)
@@ -74,16 +76,33 @@ def greedy_clique(V):
     mark_dev = cl_array.to_device(queue, mark)
     result = cl_array.empty_like(dv_dev)
     v_visited_dev = cl_array.to_device(queue, v_visited)
-    v_count = cl_array.to_device(queue, v_count)
+    v_count_dev = cl_array.to_device(queue, v_count)
 
     prg = cl.Program(ctx, """
         
 
+        /*void compute_dual_graph(__global int* V, __global const int* shape)
+        {
+            int gid = get_global_id(0);
+            int size = get_global_size(0);
+
+            for(int i=0; i<= size; i++)
+            {
+                int index= gid*shape[1] + i;
+                if((index)%shape[1] != gid)
+                {
+                    if(V[index] == 1)
+                        V[index]= gid;
+                    else 
+                        V[index] = gid;
+                }
+            }
+        }*/
         int degree(__global const int* V, __global const int* shape, __global bool* V_visited, int gid)
         {
-            int size = get_global_size(0);
+            //int size = get_global_size(0);
             int d=0;
-            for(int i=0 ; i< shape[1] && gid*shape[1] + i <= size; i++)
+            for(int i=0 ; i< shape[1] ; i++)
                 if(V_visited[i] == true)
                     d+= V[gid*shape[1] + i];
 
@@ -95,13 +114,13 @@ def greedy_clique(V):
             
             int gid = get_global_id(0);
             int size = get_global_size(0);
-            if(V_visited[gid] && mark[gid] == true)
+            if(V_visited[gid] == true && mark[gid] == true)
             {
                 int degU = degree(V, shape, V_visited, gid);
                 
-                for(int j =0; j< shape[1] && gid*shape[1] + j <= size; j++)
+                for(int j =0; j< shape[1] ; j++)
                 {
-                    if(V[gid*shape[1] + j] == 1 && mark[j] == true && V_visited[j] == true)
+                    if(V[gid*shape[1] + j] == 1 && V_visited[j] == true && mark[j] == true)
                     {
                         int degV = degree(V, shape, V_visited, j);
                         if(degV<degU)
@@ -120,27 +139,33 @@ def greedy_clique(V):
         {
             int gid = get_global_id(0);
             int size = get_global_size(0);
-            for(int i=0 ; i<=size; i++)
-                if(V_visited[gid] == true && mark[gid] == true)
-                {
-                    res[gid] = 1;
-                    V_visited[gid] = false;
-                    V_count--;
-                }
+            
+            if(V_visited[gid] == true && mark[gid] == true)
+            {
+                res[gid] = V_count[0];
+                V_visited[gid] = false;
+                //--;
+            }
+            
         }
 
 
-        __kernel void maximal_clique(__global const int* V, __global const int* shape,
-        __global float16* rand, __global int* res, __global bool* mark, __global bool* V_visited, __global int* V_count)
+        __kernel void maximal_clique(__global int* V, __global const int* shape,
+        __global int* rand, __global int* res, __global bool* mark, __global bool* V_visited, __global int* V_count)
         {
 
             int gid = get_global_id(0);            
             int size = get_global_size(0);
-            while(V_count > 0)
+            //compute_dual_graph(V, shape);
+            //barrier(CLK_GLOBAL_MEM_FENCE);
+            
+            while(V_count[0] >= 0)
             {
                 int d = degree(V, shape, V_visited, gid);
-                
-                if(V_visited[gid] && all(rand[gid] >=  1.0 - 1.0/(2*d)))
+                int rand_id = gid + V_count[0];
+                if(rand_id > size)
+                    rand_id%=size;
+                if(V_visited[gid]== true && rand[rand_id] ==1)//&& all(rand[gid] >=  1.0 - 1.0/(2*d)))
                     mark[gid] = true;   
                 
                 barrier(CLK_GLOBAL_MEM_FENCE);
@@ -149,20 +174,21 @@ def greedy_clique(V):
                 barrier(CLK_GLOBAL_MEM_FENCE);
                 
                 select_vertices(res, mark, V_visited, V_count);
+
+                barrier(CLK_GLOBAL_MEM_FENCE);
+                if(gid == V_count[0])
+                    V_count[0]--;
             }
+            barrier(CLK_GLOBAL_MEM_FENCE);
         }
         """).build()
 
     #mark = cl.Buffer(ctx, cl.mem_flags.READ_WRITE, result.nbytes/8)
-    prg.maximal_clique(queue, dv.shape, None, v_dev.data, shape_dev.data, rand_dev.data,result.data, mark_dev.data, v_visited_dev.data, v_count.data)
+    prg.maximal_clique(queue, dv.shape, None, v_dev.data, shape_dev.data, rand_dev.data,result.data, mark_dev.data, v_visited_dev.data, v_count_dev.data)
     
-    for i in range (len(result)):
-        if result[i] != 0:
-            print(i+1, result[i])
     print(result)
-    print(rand_dev)
-    print(dv_dev)
-           
+
+    
                 
 parser = argparse.ArgumentParser(
     description='Computes the clique of a matrix using PyOpenCL.',
