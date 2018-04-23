@@ -186,7 +186,22 @@ def greedy_clique(V):
     #mark = cl.Buffer(ctx, cl.mem_flags.READ_WRITE, result.nbytes/8)
     prg.maximal_clique(queue, dv.shape, None, v_dev.data, shape_dev.data, rand_dev.data,result.data, mark_dev.data, v_visited_dev.data, v_count_dev.data)
     
-    print(result)
+    #print(result)
+
+    count = 1
+    high_freq = result[0]
+    for i in range(len(result)):
+        temp = result[i]
+        tempCount = 0
+        for j in range(len(result)):
+            if temp == result[j]:
+                tempCount += 1
+        if tempCount > count:
+            high_freq = temp
+            count = tempCount
+    for i in range(len(result)):
+        if result[i] == high_freq:
+            print (i+1)
 
     
                 
