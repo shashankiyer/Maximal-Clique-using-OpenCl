@@ -1,7 +1,7 @@
 '''
 Computes the maximal clique of a graph using PyOpenCL.
 
-:authors Shashank, Kunal, Nick
+:author Shashank
 '''
 from __future__ import absolute_import
 from __future__ import print_function
