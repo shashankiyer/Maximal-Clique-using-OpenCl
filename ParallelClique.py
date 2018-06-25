@@ -17,6 +17,12 @@ os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 os.environ['PYOPENCL_CTX'] = ':'
    
 def parse_adjacency_matrix( filename):
+    '''
+    Parses the adjacency matrix from a text file
+    and stores it in a list.
+
+    :param file that contains the adjacency matrix
+    '''
     if not os.path.exists(filename):
         raise Exception('Graph file not found')
 
@@ -29,14 +35,15 @@ def parse_adjacency_matrix( filename):
                 v.append(int(j))
             V.append(v)
     
-    for i in range (len(V)):
-        for j in range (len(V[0])):
-            if i != j:
-                V[i][j] = int(not V[i][j])
-
+    
     return V
 
 def generate_coin_flips(size):
+    '''
+    Generates coin flips for the parallel clique algorithm
+
+    :param size the number of coin flips to generate
+    '''
     rand = np.zeros(size).astype(np.int32)
     for i in range (size):
         rand[i] = random.randint(0, 1)
@@ -44,6 +51,11 @@ def generate_coin_flips(size):
     return rand
 
 def degree(V):
+    '''
+    Computes the degree of all graph nodes
+
+    :param V the adjacency matrix of the graph
+    '''
     deg = np.zeros(np.shape(V)[0]).astype(np.int32)
     for i in range (len(deg)):
         for j in V[i]:
@@ -51,6 +63,11 @@ def degree(V):
     return deg
 
 def greedy_clique(V):
+    '''
+    The algorithm that computes the maximal clique of a graph in parallel
+
+    :param V the adjacency matrix of the graph 
+    '''
     v = np.array(V).astype(np.int32)
     v = v.ravel()
     dv = degree(V)
@@ -81,7 +98,10 @@ def greedy_clique(V):
     prg = cl.Program(ctx, """
         
 
-        /*void compute_dual_graph(__global int* V, __global const int* shape)
+        /*
+        Computes the dual of the graph in parallel
+        */
+        void compute_dual_graph(__global int* V, __global const int* shape)
         {
             int gid = get_global_id(0);
             int size = get_global_size(0);
@@ -92,15 +112,18 @@ def greedy_clique(V):
                 if((index)%shape[1] != gid)
                 {
                     if(V[index] == 1)
-                        V[index]= gid;
+                        V[index]= 0;
                     else 
-                        V[index] = gid;
+                        V[index] = 1;
                 }
             }
-        }*/
+        }
+
+        /*
+        Computes the degree of the vertices not covered in the previous iterations
+        */
         int degree(__global const int* V, __global const int* shape, __global bool* V_visited, int gid)
         {
-            //int size = get_global_size(0);
             int d=0;
             for(int i=0 ; i< shape[1] ; i++)
                 if(V_visited[i] == true)
@@ -109,9 +132,12 @@ def greedy_clique(V):
             return d;
         }
 
+        /*
+        Unmarks the lower degree vertex if both a vertex and its neighbour have been marked
+        */
+
         void unmark_lower_degree(__global const int* V, __global const int* shape, __global bool* mark, __global bool* V_visited)
-        {
-            
+        {   
             int gid = get_global_id(0);
             int size = get_global_size(0);
             if(V_visited[gid] == true && mark[gid] == true)
@@ -135,6 +161,10 @@ def greedy_clique(V):
             }
         }
 
+        /*
+        Selects all marked vertices as the vertices that will form the maximal clique
+        */
+
         void select_vertices(__global int* res, __global bool* mark, __global bool* V_visited, __global int* V_count)
         {
             int gid = get_global_id(0);
@@ -144,7 +174,6 @@ def greedy_clique(V):
             {
                 res[gid] = V_count[0];
                 V_visited[gid] = false;
-                //--;
             }
             
         }
@@ -156,8 +185,8 @@ def greedy_clique(V):
 
             int gid = get_global_id(0);            
             int size = get_global_size(0);
-            //compute_dual_graph(V, shape);
-            //barrier(CLK_GLOBAL_MEM_FENCE);
+            compute_dual_graph(V, shape);
+            barrier(CLK_GLOBAL_MEM_FENCE);
             
             while(V_count[0] >= 0)
             {
@@ -183,10 +212,7 @@ def greedy_clique(V):
         }
         """).build()
 
-    #mark = cl.Buffer(ctx, cl.mem_flags.READ_WRITE, result.nbytes/8)
     prg.maximal_clique(queue, dv.shape, None, v_dev.data, shape_dev.data, rand_dev.data,result.data, mark_dev.data, v_visited_dev.data, v_count_dev.data)
-    
-    #print(result)
 
     count = 1
     high_freq = result[0]
